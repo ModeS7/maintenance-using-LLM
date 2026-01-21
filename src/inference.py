@@ -218,6 +218,9 @@ class RULInference:
         if prediction is None:
             return None
 
+        # Calculate life remaining as percentage of engine's total lifecycle
+        life_remaining_pct = round(prediction.predicted_rul / engine.max_cycle * 100, 1) if engine.max_cycle > 0 else 0
+
         return {
             "engine_id": engine_id,
             "dataset": engine.dataset,
@@ -228,7 +231,7 @@ class RULInference:
             "true_rul": prediction.true_rul,
             "severity": prediction.severity,
             "severity_description": prediction.severity_description,
-            "life_remaining_pct": round(prediction.predicted_rul / MAX_RUL * 100, 1),
+            "life_remaining_pct": life_remaining_pct,
         }
 
     def get_sensor_readings(self, engine_id: int, at_cycle: Optional[int] = None) -> Optional[Dict]:

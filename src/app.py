@@ -43,14 +43,24 @@ def get_app_agent() -> Optional[MaintenanceAgent]:
     return _agent
 
 
-def get_engine_options() -> List[Tuple[str, int]]:
-    """Get list of demo engines for dropdown."""
+def get_dataset_options() -> List[Tuple[str, str]]:
+    """Get list of datasets with fault mode info."""
+    return [
+        ("FD001 - HPC Degradation (1 condition)", "FD001"),
+        ("FD002 - HPC Degradation (6 conditions)", "FD002"),
+        ("FD003 - HPC + Fan Degradation (1 condition)", "FD003"),
+        ("FD004 - HPC + Fan Degradation (6 conditions)", "FD004"),
+    ]
+
+
+def get_engine_options(dataset: str) -> List[Tuple[str, int]]:
+    """Get list of demo engines for a specific dataset."""
     inference = get_app_inference()
     options = []
 
-    for engine_id in inference.data_loader.demo_ids[:50]:  # Limit to 50 for performance
+    for engine_id in inference.data_loader.demo_ids:
         engine = inference.data_loader.get_engine(engine_id)
-        if engine:
+        if engine and engine.dataset == dataset:
             prediction = inference.predict(engine_id)
             severity = prediction.severity if prediction else "unknown"
             severity_emoji = {
@@ -59,7 +69,7 @@ def get_engine_options() -> List[Tuple[str, int]]:
                 "caution": "🟡",
                 "healthy": "🟢",
             }.get(severity, "⚪")
-            label = f"{severity_emoji} Engine {engine_id} ({engine.dataset})"
+            label = f"{severity_emoji} Engine {engine_id}"
             options.append((label, engine_id))
 
     return options
@@ -157,20 +167,79 @@ def get_cycle_range(engine_id: int) -> Tuple[int, int, int]:
     return 30, int(engine.max_cycle), int(engine.max_cycle)
 
 
-def get_fleet_summary_html() -> str:
-    """Generate fleet summary HTML."""
+def get_global_max_cycle() -> int:
+    """Get the maximum cycle across all demo engines."""
     inference = get_app_inference()
-    summary = inference.get_fleet_summary()
+    max_cycle = 100
+    for engine_id in inference.data_loader.demo_ids:
+        engine = inference.data_loader.get_engine(engine_id)
+        if engine and engine.max_cycle > max_cycle:
+            max_cycle = engine.max_cycle
+    return int(max_cycle)
 
-    svg = generate_fleet_overview_svg(
-        critical=summary["critical"],
-        warning=summary["warning"],
-        caution=summary["caution"],
-        healthy=summary["healthy"],
-        total=summary["total_engines"],
-        average_rul=summary["average_rul"],
-        fleet_health_pct=summary["fleet_health_pct"],
+
+def get_fleet_summary_at_cycle(cycles_remaining: int) -> str:
+    """Generate fleet summary at a given cycles remaining position.
+
+    Args:
+        cycles_remaining: Cycles until failure (0 = at failure, max = just started)
+    """
+    inference = get_app_inference()
+
+    # Count severity at this position
+    critical = warning = caution = healthy = 0
+    total_rul = 0
+
+    global_max = get_global_max_cycle()
+
+    for engine_id in inference.data_loader.demo_ids:
+        engine = inference.data_loader.get_engine(engine_id)
+        if engine is None:
+            continue
+
+        # Calculate where this engine is at this "cycles remaining" position
+        # If cycles_remaining > engine.max_cycle, engine hasn't started yet (healthy)
+        if cycles_remaining >= engine.max_cycle:
+            # Engine is brand new or hasn't started degrading
+            healthy += 1
+            total_rul += engine.max_cycle
+        else:
+            # Engine is at cycle = (engine.max_cycle - cycles_remaining)
+            eval_cycle = engine.max_cycle - cycles_remaining
+            eval_cycle = max(30, eval_cycle)  # Need at least window_size
+
+            prediction = inference.predict(engine_id, at_cycle=eval_cycle)
+
+            if prediction:
+                total_rul += prediction.predicted_rul
+                if prediction.severity == "critical":
+                    critical += 1
+                elif prediction.severity == "warning":
+                    warning += 1
+                elif prediction.severity == "caution":
+                    caution += 1
+                else:
+                    healthy += 1
+
+    total = critical + warning + caution + healthy
+    avg_rul = total_rul / total if total > 0 else 0
+    health_pct = (healthy / total * 100) if total > 0 else 0
+
+    return generate_fleet_overview_svg(
+        critical=critical,
+        warning=warning,
+        caution=caution,
+        healthy=healthy,
+        total=total,
+        average_rul=avg_rul,
+        fleet_health_pct=health_pct,
     )
+
+
+def get_fleet_summary_html() -> str:
+    """Generate fleet summary HTML at start (all engines healthy)."""
+    global_max = get_global_max_cycle()
+    return get_fleet_summary_at_cycle(global_max)
 
     return svg
 
@@ -224,151 +293,199 @@ def create_demo():
     data_dir = "data/CMAPSSData"
     data_available = check_data_available(data_dir)
 
-    with gr.Blocks(
-        title="Turbofan Engine Predictive Maintenance",
-        theme=gr.themes.Soft(
-            primary_hue="blue",
-            secondary_hue="slate",
-        ),
-    ) as demo:
+    # Get global max cycle for slider
+    global_max = get_global_max_cycle() if data_available else 500
 
-        gr.Markdown("""
-        # Turbofan Engine Predictive Maintenance Demo
+    with gr.Blocks(title="Turbofan Engine Predictive Maintenance") as demo:
 
-        This demo shows how a conversational AI can make predictive maintenance data accessible.
-        Select an engine, navigate through its lifecycle using the timeline slider, and ask questions!
-
-        The system predicts **Remaining Useful Life (RUL)** - the number of cycles until engine failure.
-        """)
+        gr.Markdown("# Turbofan Engine Predictive Maintenance")
 
         if not data_available:
             gr.Markdown("""
-            **Dataset not found!**
-
-            Please download the NASA C-MAPSS dataset:
-
-            1. Download from: https://phm-datasets.s3.amazonaws.com/NASA/6.+Turbofan+Engine+Degradation+Simulation+Data+Set.zip
-            2. Extract to: `data/CMAPSSData/`
-
-            Or use the Kaggle mirror: https://www.kaggle.com/datasets/behrad3d/nasa-cmaps
+            **Dataset not found!** Download from:
+            https://phm-datasets.s3.amazonaws.com/NASA/6.+Turbofan+Engine+Degradation+Simulation+Data+Set.zip
             """)
             return demo
 
-        # Top section: Engine selection and timeline
+        # CSS to flip slider only
+        gr.HTML("""
+        <style>
+        #fleet-timeline input[type="range"] {
+            transform: scaleX(-1);
+        }
+        </style>
+        """)
+
+        # Timeline slider - flipped visually so 481 is on left, 0 on right
+        # Slider value = cycles_remaining directly
+        cycle_slider = gr.Slider(
+            minimum=0,
+            maximum=global_max,
+            value=global_max,
+            step=1,
+            label="Cycles Remaining (Start → Failure)",
+            elem_id="fleet-timeline",
+        )
+
+        # Fleet overview - updates with slider
+        fleet_viz = gr.HTML(value=get_fleet_summary_html() if data_available else "")
+
+        # Engine selection row
         with gr.Row():
-            with gr.Column(scale=2):
-                with gr.Row():
-                    engine_dropdown = gr.Dropdown(
-                        choices=get_engine_options(),
-                        label="Select Engine",
-                        value=get_engine_options()[0][1] if get_engine_options() else None,
-                        interactive=True,
-                        scale=3,
-                    )
-                    refresh_btn = gr.Button("🔄", scale=0, min_width=50)
+            dataset_dropdown = gr.Dropdown(
+                choices=get_dataset_options(),
+                label="Dataset (Fault Mode)",
+                value="FD001",
+                interactive=True,
+            )
+            engine_dropdown = gr.Dropdown(
+                choices=get_engine_options("FD001"),
+                label="Engine",
+                value=get_engine_options("FD001")[0][1] if get_engine_options("FD001") else None,
+                interactive=True,
+            )
+
+        # Main content
+        with gr.Row():
             with gr.Column(scale=3):
-                cycle_slider = gr.Slider(
-                    minimum=30,
-                    maximum=200,
-                    value=100,
-                    step=1,
-                    label="Cycle (Timeline Navigation)",
-                )
-
-        # Timeline visualization
-        timeline_viz = gr.HTML(value="<p>Select an engine</p>")
-
-        # Main content: Visualization + Chat
-        with gr.Row():
-            # Left: Engine visualization and info
-            with gr.Column(scale=1):
-                engine_viz = gr.HTML(value="<p>Select an engine to view</p>")
+                engine_viz = gr.HTML(value="<p>Select an engine</p>")
+                timeline_viz = gr.HTML(value="")
+            with gr.Column(scale=2):
                 engine_info = gr.Markdown("Select an engine to view details")
-
-            # Right: Chat interface
-            with gr.Column(scale=1):
-                chatbot = gr.Chatbot(label="Maintenance Assistant", height=350)
-
-                with gr.Row():
-                    btn_fleet = gr.Button("Fleet Status", size="sm")
-                    btn_engine = gr.Button("This Engine", size="sm")
-                    btn_sensors = gr.Button("Sensors", size="sm")
-                    btn_recommend = gr.Button("Recommend", size="sm")
-
+                chatbot = gr.Chatbot(label="Ask the AI", height=300)
                 with gr.Row():
                     msg_input = gr.Textbox(
-                        placeholder="Ask about engine health, RUL, sensors...",
+                        placeholder="Ask about this engine...",
                         lines=1,
                         scale=4,
                         show_label=False,
                     )
                     send_btn = gr.Button("Send", variant="primary", scale=1)
-
                 with gr.Row():
-                    btn_attention = gr.Button("Needs Attention?", size="sm")
-                    btn_timeline = gr.Button("Timeline Analysis", size="sm")
+                    btn_fleet = gr.Button("Fleet", size="sm")
+                    btn_engine = gr.Button("This Engine", size="sm")
+                    btn_sensors = gr.Button("Sensors", size="sm")
+                    btn_recommend = gr.Button("Recommend", size="sm")
                     btn_clear = gr.Button("Clear", size="sm", variant="secondary")
 
-        # Fleet overview at bottom
-        gr.Markdown("### Fleet Overview")
-        fleet_viz = gr.HTML(
-            value=get_fleet_summary_html() if data_available else "<p>Loading...</p>",
-        )
-
-        # Status bar
-        with gr.Row():
-            ollama_status = gr.Markdown(
-                "🔴 Checking Ollama..." if not check_ollama_available()
-                else f"🟢 Ollama connected | Models: {', '.join(list_available_models()[:3])}"
-            )
+        # Hidden buttons for compatibility
+        btn_attention = gr.Button("Needs Attention?", visible=False)
+        btn_timeline = gr.Button("Timeline", visible=False)
 
         # Event handlers
-        def on_engine_change(engine_id):
+        def on_cycle_slider_change(cycles_remaining, engine_id):
+            """Update fleet status and engine view when slider changes."""
+            # Slider is visually flipped with scaleX(-1)
+            # Left = max (start), Right = 0 (failure)
+            # Slider value IS cycles_remaining directly
+            cycles_remaining = int(cycles_remaining)
+
+            # Update fleet status
+            fleet_html = get_fleet_summary_at_cycle(cycles_remaining)
+
+            # Update engine view if one is selected
             if engine_id is None:
-                return "<p>No engine selected</p>", "Select an engine", 30, 200, 100, "<p>Select an engine</p>"
+                return fleet_html, "<p>No engine selected</p>", "Select an engine"
 
-            # Get cycle range
-            min_cycle, max_cycle, current = get_cycle_range(engine_id)
+            engine = get_app_inference().data_loader.get_engine(engine_id)
+            if engine is None:
+                return fleet_html, "<p>No engine selected</p>", "Select an engine"
 
-            viz = update_visualization(engine_id, current)
-            info = update_engine_info(engine_id, current)
+            # Calculate engine's cycle based on cycles_remaining
+            if cycles_remaining >= engine.max_cycle:
+                # Engine hasn't started yet, show at cycle 30 (start)
+                eval_cycle = 30
+            else:
+                eval_cycle = engine.max_cycle - cycles_remaining
+                eval_cycle = max(30, eval_cycle)
+
+            viz = update_visualization(engine_id, eval_cycle)
+            info = update_engine_info(engine_id, eval_cycle)
+
+            return fleet_html, viz, info
+
+        def on_dataset_change(dataset):
+            """Update engine dropdown when dataset changes."""
+            options = get_engine_options(dataset)
+            first_engine = options[0][1] if options else None
+            return gr.Dropdown(choices=options, value=first_engine)
+
+        def on_engine_change(engine_id, cycles_remaining):
+            if engine_id is None:
+                return "<p>No engine selected</p>", "Select an engine", "<p>Select an engine</p>"
+
+            engine = get_app_inference().data_loader.get_engine(engine_id)
+            if engine is None:
+                return "<p>No engine selected</p>", "Select an engine", "<p>Select an engine</p>"
+
+            # Slider value IS cycles_remaining directly (slider is visually flipped)
+            cycles_remaining = int(cycles_remaining)
+
+            # Calculate engine's cycle based on current slider position
+            if cycles_remaining >= engine.max_cycle:
+                eval_cycle = 30
+            else:
+                eval_cycle = engine.max_cycle - cycles_remaining
+                eval_cycle = max(30, eval_cycle)
+
+            viz = update_visualization(engine_id, eval_cycle)
+            info = update_engine_info(engine_id, eval_cycle)
             timeline = update_timeline(engine_id)
 
-            return viz, info, min_cycle, max_cycle, current, timeline
+            return viz, info, timeline
 
-        def on_cycle_change(engine_id, cycle):
-            if engine_id is None:
-                return "<p>No engine selected</p>", "Select an engine"
-
-            viz = update_visualization(engine_id, int(cycle))
-            info = update_engine_info(engine_id, int(cycle))
-
-            return viz, info
-
-        def refresh_options():
-            return gr.Dropdown(choices=get_engine_options())
+        def extract_content(content):
+            """Extract plain string from content (handles structured format)."""
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                # Structured format: [{'text': '...', 'type': 'text'}]
+                texts = []
+                for item in content:
+                    if isinstance(item, dict) and 'text' in item:
+                        texts.append(item['text'])
+                    elif isinstance(item, str):
+                        texts.append(item)
+                return ''.join(texts)
+            return str(content)
 
         def submit_message(message, history, engine_id, cycle):
             if not message.strip():
                 return history, ""
 
-            history = history + [[message, None]]
+            history = list(history) if history else []
+            history.append({"role": "user", "content": message})
             return history, ""
 
         def generate_response(history, engine_id, cycle):
-            if not history or history[-1][1] is not None:
+            if not history:
                 return history
 
-            message = history[-1][0]
-            history[-1][1] = ""
+            history = list(history)
+            last_msg = history[-1]
+            if not isinstance(last_msg, dict) or last_msg.get("role") != "user":
+                return history
 
-            for response in chat_response(message, history[:-1], engine_id, cycle):
-                history[-1][1] = response
+            message = extract_content(last_msg.get("content", ""))
+
+            # Convert to old format for chat_response function
+            old_history = []
+            for i in range(0, len(history) - 1, 2):
+                user_content = extract_content(history[i].get("content", "")) if i < len(history) else ""
+                asst_content = extract_content(history[i+1].get("content", "")) if i+1 < len(history) else ""
+                old_history.append([user_content, asst_content])
+
+            # Add assistant message placeholder
+            history.append({"role": "assistant", "content": ""})
+
+            for response in chat_response(message, old_history, engine_id, cycle):
+                history[-1] = {"role": "assistant", "content": str(response)}
                 yield history
 
         def send_prepared_prompt(prompt, history, engine_id):
             formatted = handle_prepared_prompt(prompt, engine_id)
-            history = history + [[formatted, None]]
+            history = list(history) if history else []
+            history.append({"role": "user", "content": formatted})
             return history
 
         def clear_chat():
@@ -378,21 +495,22 @@ def create_demo():
             return []
 
         # Connect events
+        cycle_slider.change(
+            on_cycle_slider_change,
+            inputs=[cycle_slider, engine_dropdown],
+            outputs=[fleet_viz, engine_viz, engine_info],
+        )
+
+        dataset_dropdown.change(
+            on_dataset_change,
+            inputs=[dataset_dropdown],
+            outputs=[engine_dropdown],
+        )
+
         engine_dropdown.change(
             on_engine_change,
-            inputs=[engine_dropdown],
-            outputs=[engine_viz, engine_info, cycle_slider, cycle_slider, cycle_slider, timeline_viz],
-        )
-
-        cycle_slider.change(
-            on_cycle_change,
             inputs=[engine_dropdown, cycle_slider],
-            outputs=[engine_viz, engine_info],
-        )
-
-        refresh_btn.click(
-            refresh_options,
-            outputs=[engine_dropdown],
+            outputs=[engine_viz, engine_info, timeline_viz],
         )
 
         # Chat submission
@@ -480,11 +598,11 @@ def create_demo():
         btn_clear.click(clear_chat, outputs=[chatbot])
 
         # Initialize visualization on load
-        if get_engine_options():
+        if get_engine_options("FD001"):
             demo.load(
                 on_engine_change,
-                inputs=[engine_dropdown],
-                outputs=[engine_viz, engine_info, cycle_slider, cycle_slider, cycle_slider, timeline_viz],
+                inputs=[engine_dropdown, cycle_slider],
+                outputs=[engine_viz, engine_info, timeline_viz],
             )
 
     return demo
