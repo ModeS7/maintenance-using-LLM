@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Data files
+data/N-CMAPSS/*.h5
+*.h5
+
+# Model weights
+models/*.pt
+models/*.pth
+
+# Database
+*.db
+*.sqlite
+
+# Misc
+.DS_Store
+*.log
