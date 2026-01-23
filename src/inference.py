@@ -387,6 +387,86 @@ class RULInference:
             "dataset_breakdown": dataset_counts,
         }
 
+    def get_fleet_summary_at_cycle(self, cycles_remaining: int, global_max: int) -> Dict:
+        """
+        Get fleet summary at a specific cycles_remaining position.
+
+        Args:
+            cycles_remaining: Cycles until failure (0 = at failure, global_max = just started)
+            global_max: Maximum cycle across all engines (for reference)
+
+        Returns:
+            Dictionary with fleet statistics at this time point
+        """
+        if not self._is_loaded:
+            self.load()
+
+        critical = warning = caution = healthy = 0
+        total_rul = 0
+        attention_needed = []
+        dataset_counts = {}
+
+        for engine_id in self.data_loader.demo_ids:
+            engine = self.data_loader.get_engine(engine_id)
+            if engine is None:
+                continue
+
+            # Track dataset
+            ds = engine.dataset
+            dataset_counts[ds] = dataset_counts.get(ds, 0) + 1
+
+            # Calculate where this engine is at this "cycles remaining" position
+            if cycles_remaining >= engine.max_cycle:
+                # Engine hasn't started degrading yet - it's healthy
+                healthy += 1
+                total_rul += engine.max_cycle
+            else:
+                # Engine is at cycle = (engine.max_cycle - cycles_remaining)
+                eval_cycle = engine.max_cycle - cycles_remaining
+                eval_cycle = max(self.window_size, eval_cycle)
+
+                prediction = self.predict(engine_id, at_cycle=eval_cycle)
+
+                if prediction:
+                    total_rul += prediction.predicted_rul
+                    if prediction.severity == "critical":
+                        critical += 1
+                        attention_needed.append({
+                            "engine_id": engine_id,
+                            "predicted_rul": prediction.predicted_rul,
+                            "severity": prediction.severity,
+                        })
+                    elif prediction.severity == "warning":
+                        warning += 1
+                        attention_needed.append({
+                            "engine_id": engine_id,
+                            "predicted_rul": prediction.predicted_rul,
+                            "severity": prediction.severity,
+                        })
+                    elif prediction.severity == "caution":
+                        caution += 1
+                    else:
+                        healthy += 1
+
+        total = critical + warning + caution + healthy
+        avg_rul = total_rul / total if total > 0 else 0
+
+        # Sort attention list by RUL (most critical first) and limit to 10
+        attention_needed.sort(key=lambda x: x["predicted_rul"])
+        attention_needed = attention_needed[:10]
+
+        return {
+            "total_engines": total,
+            "critical": critical,
+            "warning": warning,
+            "caution": caution,
+            "healthy": healthy,
+            "average_rul": round(avg_rul, 1),
+            "fleet_health_pct": round(healthy / total * 100, 1) if total > 0 else 0,
+            "immediate_attention": attention_needed,
+            "dataset_breakdown": dataset_counts,
+        }
+
     def get_engine_timeline(self, engine_id: int, step: int = 10) -> Optional[List[Dict]]:
         """
         Get RUL predictions over the engine's lifecycle.

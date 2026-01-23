@@ -7,9 +7,22 @@ The LLM interprets and contextualizes the data, but never makes up numbers.
 
 import json
 from typing import Dict, List, Optional, Any
+import numpy as np
 
 from src.inference import RULInference, get_inference
-from src.data_loader import SENSOR_NAMES, SETTING_NAMES
+# SENSOR_NAMES and SETTING_NAMES available in inference results
+
+
+class NumpyEncoder(json.JSONEncoder):
+    """JSON encoder that handles numpy types."""
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
 
 
 # Tool definitions for Ollama
@@ -116,7 +129,9 @@ class ToolContext:
     def __init__(self):
         self._inference: Optional[RULInference] = None
         self._current_engine_id: Optional[int] = None
-        self._current_cycle: Optional[int] = None
+        self._current_cycle: Optional[int] = None  # eval_cycle (cycle within engine lifecycle)
+        self._cycles_remaining: Optional[int] = None  # cycles until end of simulation
+        self._hide_future_data: bool = True  # Treat current cycle as "now"
 
     @property
     def inference(self) -> RULInference:
@@ -124,10 +139,11 @@ class ToolContext:
             self._inference = get_inference()
         return self._inference
 
-    def set_current_engine(self, engine_id: Optional[int] = None, cycle: Optional[int] = None):
-        """Set the currently selected engine and cycle."""
+    def set_current_engine(self, engine_id: Optional[int] = None, cycle: Optional[int] = None, cycles_remaining: Optional[int] = None):
+        """Set the currently selected engine and cycle context."""
         self._current_engine_id = engine_id
         self._current_cycle = cycle
+        self._cycles_remaining = cycles_remaining
 
 
 # Global tool context
@@ -148,20 +164,31 @@ def get_engine_status(engine_id: int, at_cycle: Optional[int] = None) -> Dict[st
 
     Args:
         engine_id: The engine ID to query
-        at_cycle: Optional specific cycle number
+        at_cycle: Optional specific cycle number (uses current slider position if not provided)
 
     Returns:
         Dictionary with engine status including:
         - engine_id, dataset, current_cycle
-        - predicted_rul, true_rul
+        - predicted_rul (model prediction)
         - severity, severity_description
-        - life_remaining_pct
     """
     ctx = get_tool_context()
+
+    # Use current cycle from context if not explicitly provided
+    if at_cycle is None:
+        at_cycle = ctx._current_cycle
+
     status = ctx.inference.get_engine_status(engine_id, at_cycle)
 
     if status is None:
         return {"error": f"Engine {engine_id} not found"}
+
+    # Hide future data - in real deployment you wouldn't know true RUL or when failure occurs
+    if ctx._hide_future_data:
+        status.pop("true_rul", None)  # Unknown in real-time
+        status.pop("max_cycle", None)  # Reveals failure time
+        status.pop("total_cycles", None)  # Reveals full lifecycle
+        status.pop("life_remaining_pct", None)  # Based on future knowledge
 
     return status
 
@@ -172,16 +199,25 @@ def get_sensor_readings(engine_id: int, at_cycle: Optional[int] = None) -> Dict[
 
     Args:
         engine_id: The engine ID to query
-        at_cycle: Optional specific cycle number
+        at_cycle: Optional specific cycle number (uses current slider position if not provided)
 
     Returns:
         Dictionary with sensor readings and analysis
     """
     ctx = get_tool_context()
+
+    # Use current cycle from context if not explicitly provided
+    if at_cycle is None:
+        at_cycle = ctx._current_cycle
+
     result = ctx.inference.get_sensor_readings(engine_id, at_cycle)
 
     if result is None:
         return {"error": f"Engine {engine_id} not found"}
+
+    # Hide future data - the 'rul' field is true RUL (future knowledge)
+    if ctx._hide_future_data:
+        result.pop("rul", None)
 
     return result
 
@@ -198,12 +234,19 @@ def list_engines(severity_filter: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     ctx = get_tool_context()
     engines = ctx.inference.list_demo_engines(severity_filter=severity_filter)
+
+    # Hide future data from each engine entry
+    if ctx._hide_future_data:
+        for engine in engines:
+            engine.pop("true_rul", None)
+            engine.pop("total_cycles", None)
+
     return engines
 
 
 def get_fleet_summary() -> Dict[str, Any]:
     """
-    Get aggregate statistics for the fleet.
+    Get aggregate statistics for the fleet at the current time.
 
     Returns:
         Dictionary with:
@@ -215,7 +258,20 @@ def get_fleet_summary() -> Dict[str, Any]:
         - dataset_breakdown
     """
     ctx = get_tool_context()
-    summary = ctx.inference.get_fleet_summary()
+
+    # If we have a cycles_remaining context, use it for fleet evaluation
+    if ctx._cycles_remaining is not None:
+        # Get global max for reference
+        global_max = 0
+        for engine_id in ctx.inference.data_loader.demo_ids:
+            engine = ctx.inference.data_loader.get_engine(engine_id)
+            if engine and engine.max_cycle > global_max:
+                global_max = engine.max_cycle
+
+        summary = ctx.inference.get_fleet_summary_at_cycle(ctx._cycles_remaining, global_max)
+    else:
+        summary = ctx.inference.get_fleet_summary()
+
     return summary
 
 
@@ -265,7 +321,7 @@ def execute_tool(name: str, arguments: Dict[str, Any]) -> str:
 
     try:
         result = TOOLS[name](**arguments)
-        return json.dumps(result, indent=2)
+        return json.dumps(result, indent=2, cls=NumpyEncoder)
     except Exception as e:
         return json.dumps({"error": f"Tool execution failed: {str(e)}"})
 

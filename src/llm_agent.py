@@ -30,8 +30,9 @@ CRITICAL RULES:
 
 RUL (REMAINING USEFUL LIFE):
 - Measured in operational cycles
-- Maximum tracked RUL is 125 cycles (engines beyond this are considered healthy)
 - RUL prediction tells how many cycles until expected engine failure
+- Prediction is based on LSTM model trained on historical sensor data
+- You only know the PREDICTED RUL, not the actual remaining life
 
 SEVERITY LEVELS:
 - Critical (red): RUL < 30 cycles - Immediate maintenance required, high failure risk
@@ -159,9 +160,9 @@ class MaintenanceAgent:
             print(f"Warning: Could not check Ollama models: {e}")
             print("Make sure Ollama is running: ollama serve")
 
-    def set_current_engine(self, engine_id: Optional[int] = None, cycle: Optional[int] = None):
+    def set_current_engine(self, engine_id: Optional[int] = None, cycle: Optional[int] = None, cycles_remaining: Optional[int] = None):
         """Set the currently selected engine in context."""
-        self.conversation.tool_context.set_current_engine(engine_id, cycle)
+        self.conversation.tool_context.set_current_engine(engine_id, cycle, cycles_remaining)
 
     def clear_history(self):
         """Clear conversation history."""
@@ -169,7 +170,24 @@ class MaintenanceAgent:
 
     def _format_messages_for_ollama(self) -> List[Dict]:
         """Format conversation history for Ollama API."""
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        # Build dynamic system prompt with current context
+        system_content = SYSTEM_PROMPT
+
+        # Add current time context if available
+        ctx = self.conversation.tool_context
+        if ctx._current_cycle is not None:
+            system_content += f"""
+
+CURRENT CONTEXT:
+- Current operational cycle: {ctx._current_cycle}
+- This is the PRESENT moment - you have no knowledge of future events
+- All predictions are based on sensor data up to cycle {ctx._current_cycle}
+- You do NOT know when the engine will actually fail - only the predicted RUL from the model"""
+
+        if ctx._current_engine_id is not None:
+            system_content += f"\n- Currently viewing engine: {ctx._current_engine_id}"
+
+        messages = [{"role": "system", "content": system_content}]
 
         for msg in self.conversation.messages:
             if msg.role == "user":

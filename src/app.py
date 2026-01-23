@@ -11,7 +11,7 @@ from src.inference import RULInference, get_inference
 from src.llm_agent import MaintenanceAgent, check_ollama_available, list_available_models
 from src.tools import get_tool_context
 from src.visualization import generate_engine_svg, generate_fleet_overview_svg, generate_timeline_svg
-from src.data_loader import check_data_available, print_download_instructions, SENSOR_NAMES
+from src.data_loader import check_data_available, print_download_instructions
 
 
 # Global state
@@ -132,11 +132,9 @@ def update_engine_info(engine_id: int, cycle: Optional[int] = None) -> str:
     info = f"""
 **Engine:** {status['engine_id']} (Dataset: {status['dataset']})
 
-**Current Cycle:** {status['current_cycle']} / {status['max_cycle']}
+**Current Cycle:** {status['current_cycle']}
 
 **Predicted RUL:** <span style="color: {severity_color}; font-weight: bold;">{status['predicted_rul']} cycles</span>
-
-**True RUL:** {status['true_rul']} cycles
 
 **Severity:** <span style="color: {severity_color}; font-weight: bold;">{status['severity'].upper()}</span>
 
@@ -206,7 +204,7 @@ def get_fleet_summary_at_cycle(cycles_remaining: int) -> str:
         else:
             # Engine is at cycle = (engine.max_cycle - cycles_remaining)
             eval_cycle = engine.max_cycle - cycles_remaining
-            eval_cycle = max(30, eval_cycle)  # Need at least window_size
+            eval_cycle = max(get_app_inference().window_size, eval_cycle)
 
             prediction = inference.predict(engine_id, at_cycle=eval_cycle)
 
@@ -241,14 +239,13 @@ def get_fleet_summary_html() -> str:
     global_max = get_global_max_cycle()
     return get_fleet_summary_at_cycle(global_max)
 
-    return svg
-
 
 def chat_response(
     message: str,
     history: List[List[str]],
     engine_id: int,
-    cycle: int,
+    eval_cycle: int,
+    cycles_remaining: int,
 ) -> Generator[str, None, None]:
     """
     Process chat message and stream response.
@@ -257,7 +254,8 @@ def chat_response(
         message: User message
         history: Chat history
         engine_id: Currently selected engine
-        cycle: Current cycle being viewed
+        eval_cycle: Current cycle within engine lifecycle
+        cycles_remaining: Cycles remaining in simulation (for fleet context)
     """
     agent = get_app_agent()
 
@@ -265,9 +263,9 @@ def chat_response(
         yield "LLM not available. Please ensure Ollama is running and a model is installed.\n\nRun:\n```\nollama serve\nollama pull qwen3:8b\n```"
         return
 
-    # Update tool context with current engine and cycle
+    # Update tool context with current engine, cycle, and cycles_remaining
     if engine_id:
-        agent.set_current_engine(engine_id, cycle)
+        agent.set_current_engine(engine_id, eval_cycle, cycles_remaining)
 
     # Stream response
     response = ""
@@ -351,8 +349,7 @@ def create_demo():
                 engine_viz = gr.HTML(value="<p>Select an engine</p>")
                 timeline_viz = gr.HTML(value="")
             with gr.Column(scale=2):
-                engine_info = gr.Markdown("Select an engine to view details")
-                chatbot = gr.Chatbot(label="Ask the AI", height=300)
+                chatbot = gr.Chatbot(label="Ask the AI", height=400)
                 with gr.Row():
                     msg_input = gr.Textbox(
                         placeholder="Ask about this engine...",
@@ -385,24 +382,24 @@ def create_demo():
 
             # Update engine view if one is selected
             if engine_id is None:
-                return fleet_html, "<p>No engine selected</p>", "Select an engine"
+                return fleet_html, "<p>No engine selected</p>"
 
             engine = get_app_inference().data_loader.get_engine(engine_id)
             if engine is None:
-                return fleet_html, "<p>No engine selected</p>", "Select an engine"
+                return fleet_html, "<p>No engine selected</p>"
 
             # Calculate engine's cycle based on cycles_remaining
+            window_size = get_app_inference().window_size
             if cycles_remaining >= engine.max_cycle:
-                # Engine hasn't started yet, show at cycle 30 (start)
-                eval_cycle = 30
+                # Engine hasn't started yet, show at window_size (start)
+                eval_cycle = window_size
             else:
                 eval_cycle = engine.max_cycle - cycles_remaining
-                eval_cycle = max(30, eval_cycle)
+                eval_cycle = max(window_size, eval_cycle)
 
             viz = update_visualization(engine_id, eval_cycle)
-            info = update_engine_info(engine_id, eval_cycle)
 
-            return fleet_html, viz, info
+            return fleet_html, viz
 
         def on_dataset_change(dataset):
             """Update engine dropdown when dataset changes."""
@@ -412,27 +409,27 @@ def create_demo():
 
         def on_engine_change(engine_id, cycles_remaining):
             if engine_id is None:
-                return "<p>No engine selected</p>", "Select an engine", "<p>Select an engine</p>"
+                return "<p>No engine selected</p>", "<p>Select an engine</p>"
 
             engine = get_app_inference().data_loader.get_engine(engine_id)
             if engine is None:
-                return "<p>No engine selected</p>", "Select an engine", "<p>Select an engine</p>"
+                return "<p>No engine selected</p>", "<p>Select an engine</p>"
 
             # Slider value IS cycles_remaining directly (slider is visually flipped)
             cycles_remaining = int(cycles_remaining)
+            window_size = get_app_inference().window_size
 
             # Calculate engine's cycle based on current slider position
             if cycles_remaining >= engine.max_cycle:
-                eval_cycle = 30
+                eval_cycle = window_size
             else:
                 eval_cycle = engine.max_cycle - cycles_remaining
-                eval_cycle = max(30, eval_cycle)
+                eval_cycle = max(window_size, eval_cycle)
 
             viz = update_visualization(engine_id, eval_cycle)
-            info = update_engine_info(engine_id, eval_cycle)
             timeline = update_timeline(engine_id)
 
-            return viz, info, timeline
+            return viz, timeline
 
         def extract_content(content):
             """Extract plain string from content (handles structured format)."""
@@ -457,7 +454,7 @@ def create_demo():
             history.append({"role": "user", "content": message})
             return history, ""
 
-        def generate_response(history, engine_id, cycle):
+        def generate_response(history, engine_id, cycles_remaining):
             if not history:
                 return history
 
@@ -467,6 +464,21 @@ def create_demo():
                 return history
 
             message = extract_content(last_msg.get("content", ""))
+
+            # Convert cycles_remaining (slider value) to eval_cycle
+            # Slider value is cycles_remaining; eval_cycle = max_cycle - cycles_remaining
+            cycles_remaining = int(cycles_remaining)
+            inference = get_app_inference()
+            window_size = inference.window_size
+            engine = inference.data_loader.get_engine(engine_id)
+            if engine:
+                if cycles_remaining >= engine.max_cycle:
+                    eval_cycle = window_size  # Engine hasn't started yet
+                else:
+                    eval_cycle = engine.max_cycle - cycles_remaining
+                    eval_cycle = max(window_size, eval_cycle)
+            else:
+                eval_cycle = window_size
 
             # Convert to old format for chat_response function
             old_history = []
@@ -478,7 +490,7 @@ def create_demo():
             # Add assistant message placeholder
             history.append({"role": "assistant", "content": ""})
 
-            for response in chat_response(message, old_history, engine_id, cycle):
+            for response in chat_response(message, old_history, engine_id, eval_cycle, cycles_remaining):
                 history[-1] = {"role": "assistant", "content": str(response)}
                 yield history
 
@@ -498,7 +510,7 @@ def create_demo():
         cycle_slider.change(
             on_cycle_slider_change,
             inputs=[cycle_slider, engine_dropdown],
-            outputs=[fleet_viz, engine_viz, engine_info],
+            outputs=[fleet_viz, engine_viz],
         )
 
         dataset_dropdown.change(
@@ -510,7 +522,7 @@ def create_demo():
         engine_dropdown.change(
             on_engine_change,
             inputs=[engine_dropdown, cycle_slider],
-            outputs=[engine_viz, engine_info, timeline_viz],
+            outputs=[engine_viz, timeline_viz],
         )
 
         # Chat submission
@@ -602,7 +614,7 @@ def create_demo():
             demo.load(
                 on_engine_change,
                 inputs=[engine_dropdown, cycle_slider],
-                outputs=[engine_viz, engine_info, timeline_viz],
+                outputs=[engine_viz, timeline_viz],
             )
 
     return demo
