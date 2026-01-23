@@ -60,47 +60,62 @@ User: "Give me a fleet overview"
 ### Prerequisites
 
 - Python 3.10+
-- 5~6GB disk space (for Ollama model)
+- 5-6GB disk space (for Ollama model)
 
 ### Step 1: Clone and Setup
 
+**Linux / macOS / WSL:**
 ```bash
 git clone <repository-url>
 cd maintenance-using-LLM
 
-# Create virtual environment
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# venv\Scripts\activate   # Windows
-
-# Install dependencies
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-**Included in repo:** Dataset (`data/CMAPSSData/`) and trained model (`models/rul_model.pt`) are already included.
+**Windows (PowerShell):**
+```powershell
+git clone <repository-url>
+cd maintenance-using-LLM
+
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+**Windows (Command Prompt):**
+```cmd
+git clone <repository-url>
+cd maintenance-using-LLM
+
+python -m venv venv
+venv\Scripts\activate.bat
+pip install -r requirements.txt
+```
+
+**Included in repo:** Dataset (`data/CMAPSSData/`) and trained model (`models/rul_model.pt`).
 
 ### Step 2: Install Ollama (Local LLM)
 
-```bash
-# Linux/WSL
-curl -fsSL https://ollama.ai/install.sh | sh
+| Platform | Installation |
+|----------|--------------|
+| **Windows** | Download installer from https://ollama.ai/download |
+| **macOS** | `brew install ollama` or download from https://ollama.ai/download |
+| **Linux/WSL** | `curl -fsSL https://ollama.ai/install.sh \| sh` |
 
-# macOS
-brew install ollama
-
-# Windows: Download from https://ollama.ai/download
+After installation, pull the model (same command on all platforms):
 ```
-
-**Pull a model:**
-```bash
 ollama pull qwen3:8b
 ```
 
 **Verify:** `ollama list` should show `qwen3:8b`.
 
+> **Note (Windows):** Ollama runs automatically after installation. If you see "connection refused" errors, open the Ollama app from the Start menu.
+
 ### Step 3: Run the Demo
 
-```bash
+```
 python -m src.app
 ```
 
