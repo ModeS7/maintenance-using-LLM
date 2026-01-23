@@ -1,0 +1,16 @@
+{
+  "model_type": "lstm",
+  "window_size": 30,
+  "hidden_size": 64,
+  "num_layers": 2,
+  "datasets": [
+    "FD001",
+    "FD002",
+    "FD003",
+    "FD004"
+  ],
+  "train_engines": 497,
+  "demo_engines": 212,
+  "best_val_rmse": 43.098396084262156,
+  "best_val_mae": 30.1455020904541
+}
