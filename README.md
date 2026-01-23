@@ -60,10 +60,9 @@ User: "Give me a fleet overview"
 ### Prerequisites
 
 - Python 3.10+
-- NVIDIA GPU (recommended for training, not required for demo)
-- ~2GB disk space (dataset + model + Ollama)
+- 5~6GB disk space (for Ollama model)
 
-### Step 1: Clone and Setup Environment
+### Step 1: Clone and Setup
 
 ```bash
 git clone <repository-url>
@@ -78,34 +77,9 @@ source venv/bin/activate  # Linux/Mac
 pip install -r requirements.txt
 ```
 
-**Verify:** `python -c "import torch; print(torch.cuda.is_available())"` should print `True` if GPU available.
+**Included in repo:** Dataset (`data/CMAPSSData/`) and trained model (`models/rul_model.pt`) are already included.
 
-### Step 2: Download the Dataset
-
-The NASA C-MAPSS dataset is ~45MB.
-
-```bash
-# Download
-wget "https://phm-datasets.s3.amazonaws.com/NASA/6.+Turbofan+Engine+Degradation+Simulation+Data+Set.zip"
-
-# Extract to data/ folder
-unzip "6.+Turbofan+Engine+Degradation+Simulation+Data+Set.zip" -d data/
-```
-
-**Alternative:** Download from [Kaggle](https://www.kaggle.com/datasets/behrad3d/nasa-cmaps) and extract to `data/CMAPSSData/`.
-
-**Verify:** You should have these files:
-```
-data/CMAPSSData/
-├── train_FD001.txt  ... train_FD004.txt
-├── test_FD001.txt   ... test_FD004.txt
-├── RUL_FD001.txt    ... RUL_FD004.txt
-└── readme.txt
-```
-
-### Step 3: Install Ollama (Local LLM)
-
-Ollama runs LLMs locally. Install it:
+### Step 2: Install Ollama (Local LLM)
 
 ```bash
 # Linux/WSL
@@ -117,52 +91,14 @@ brew install ollama
 # Windows: Download from https://ollama.ai/download
 ```
 
-**Start Ollama** (runs as background service):
+**Pull a model:**
 ```bash
-ollama serve
-# If you get "address already in use", it's already running - that's fine
+ollama pull qwen3:8b
 ```
 
-**Pull a model** (in a new terminal):
-```bash
-ollama pull qwen3:8b    # Recommended: good balance of speed/quality
-# OR
-ollama pull llama3.1:8b # Alternative
-```
+**Verify:** `ollama list` should show `qwen3:8b`.
 
-**Verify:** `ollama list` should show your model.
-
-### Step 4: Train the LSTM Model
-
-This trains the RUL prediction model on the C-MAPSS data.
-
-```bash
-python -m src.train --epochs 50 --batch-size 256
-```
-
-**What happens:**
-- Loads all 4 dataset subsets (FD001-FD004)
-- Splits: 497 engines for training, 212 for demo
-- Creates 30-cycle sliding windows from sensor data
-- Trains LSTM to predict remaining useful life
-- Saves best model to `models/rul_model.pt`
-
-**Expected output:**
-```
-Loaded FD001: 100 engines
-Loaded FD002: 260 engines
-...
-Epoch 1/50: train_loss=1234.5, val_rmse=45.2
-Epoch 2/50: train_loss=892.3, val_rmse=38.1
-...
-Training complete. Best RMSE: 17.88
-```
-
-**Training takes:** ~5-10 minutes on GPU, ~30 minutes on CPU.
-
-**Skip training?** The demo will use ground-truth RUL values if no model exists.
-
-### Step 5: Run the Demo
+### Step 3: Run the Demo
 
 ```bash
 python -m src.app
@@ -170,13 +106,7 @@ python -m src.app
 
 **Open:** http://localhost:7860
 
-**What you should see:**
-- Fleet status bar at top (shows engine health distribution)
-- Cycle slider (scrub through time)
-- Engine visualization (SVG turbofan diagram)
-- Chat interface with quick prompt buttons
-
-### Step 6: Try It Out
+### Step 4: Try It Out
 
 1. **Move the slider** - Watch fleet status change as you simulate time passing
 2. **Click "Fleet Overview"** - LLM summarizes fleet health
@@ -189,20 +119,17 @@ python -m src.app
 | Problem | Solution |
 |---------|----------|
 | `ModuleNotFoundError` | Run `pip install -r requirements.txt` |
-| `No such file: train_FD001.txt` | Check dataset is in `data/CMAPSSData/` |
 | `Ollama connection refused` | Run `ollama serve` in another terminal |
 | `Model not found` | Run `ollama pull qwen3:8b` |
-| CUDA out of memory | Reduce batch size: `--batch-size 128` |
-| Slow training | Use GPU or reduce epochs: `--epochs 20` |
 
-### Training Options
+### Retraining the Model (Optional)
+
+To retrain with different parameters:
 
 ```bash
-python -m src.train --help
+python -m src.train --epochs 50 --batch-size 256
 
 # Key options:
---epochs 50        # Number of training epochs
---batch-size 256   # Batch size (reduce if OOM)
 --window-size 30   # Sequence length for LSTM
 --hidden-size 64   # LSTM hidden dimension
 --model-type lstm  # Architecture: lstm, cnn_lstm, attention
