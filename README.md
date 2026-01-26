@@ -161,7 +161,38 @@ python -m src.train --epochs 50 --batch-size 256
 | FD003 | 100 | 1 (Sea Level) | HPC + Fan |
 | FD004 | 249 | 6 (varying) | HPC + Fan |
 
-**21 sensors** (temperatures, pressures, speeds), **14 used** for prediction.
+### Sensors Used (14)
+
+| # | Symbol | Description | Unit |
+|---|--------|-------------|------|
+| 2 | T24 | Total temperature at LPC outlet | °R |
+| 3 | T30 | Total temperature at HPC outlet | °R |
+| 4 | T50 | Total temperature at LPT outlet | °R |
+| 7 | P30 | Total pressure at HPC outlet | psia |
+| 8 | Nf | Physical fan speed | rpm |
+| 9 | Nc | Physical core speed | rpm |
+| 11 | Ps30 | Static pressure at HPC outlet | psia |
+| 12 | phi | Ratio of fuel flow to Ps30 | pps/psi |
+| 13 | NRf | Corrected fan speed | rpm |
+| 14 | NRc | Corrected core speed | rpm |
+| 15 | BPR | Bypass ratio | - |
+| 17 | htBleed | Bleed enthalpy | - |
+| 20 | W31 | HPT coolant bleed | lbm/s |
+| 21 | W32 | LPT coolant bleed | lbm/s |
+
+### Sensors Excluded (7)
+
+Constant or near-constant values, no predictive information.
+
+| # | Symbol | Description | Unit |
+|---|--------|-------------|------|
+| 1 | T2 | Total temperature at fan inlet | °R |
+| 5 | P2 | Pressure at fan inlet | psia |
+| 6 | P15 | Total pressure in bypass-duct | psia |
+| 10 | epr | Engine pressure ratio (P50/P2) | - |
+| 16 | farB | Burner fuel-air ratio | - |
+| 18 | Nf_dmd | Demanded fan speed | rpm |
+| 19 | PCNfR_dmd | Demanded corrected fan speed | rpm |
 
 ## Project Structure
 
