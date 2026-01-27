@@ -292,6 +292,10 @@ def get_engine_timeline(engine_id: int, step: int = 10) -> Dict[str, Any]:
     if timeline is None:
         return {"error": f"Engine {engine_id} not found"}
 
+    # Remove true_rul - unknown in real deployment
+    for entry in timeline:
+        entry.pop("true_rul", None)
+
     return {"engine_id": engine_id, "timeline": timeline}
 
 
